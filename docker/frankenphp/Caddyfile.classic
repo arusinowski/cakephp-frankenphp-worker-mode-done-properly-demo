@@ -1,0 +1,19 @@
+# FrankenPHP in classic mode: every request boots CakePHP through webroot/index.php.
+{
+	skip_install_trust
+	auto_https off
+	# The admin API (localhost:2019 inside the container) stays on: the image's healthcheck uses it.
+	# Same number of PHP threads serving the app as the worker service, so benchmarks compare like with like.
+	frankenphp {
+		num_threads {$FRANKENPHP_THREADS:2}
+	}
+}
+
+:80 {
+	root /app/webroot
+
+	# The worker script only works in a worker: do not run it here.
+	respond /frankenphp-worker.php 404
+
+	php_server
+}

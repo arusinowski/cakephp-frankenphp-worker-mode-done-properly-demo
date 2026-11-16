@@ -1,0 +1,95 @@
+# Demo stack: MariaDB, FrankenPHP in classic and in worker mode (same image), and a cli service for Composer,
+# bin/cake, the tests, the soak test and the benchmark. See README.md.
+#
+# The FrankenPHP services run with DEBUG=false, so HostHeaderMiddleware accepts only the host in APP_FULL_BASE_URL:
+# call them from inside the network, e.g. `docker compose run --rm cli curl -s http://frankenphp-worker/api/flags/acme`.
+# OPcache does not check timestamps and workers keep code in memory: restart the services after code changes and
+# after migrations (`docker compose restart frankenphp-classic frankenphp-worker`).
+name: frankenphp-worker-demo
+
+x-frankenphp: &frankenphp
+  build:
+    context: ./docker/frankenphp
+    target: server
+  image: frankenphp-worker-demo:server
+  volumes:
+    - .:/app
+  # FrankenPHP runs as root: keep its cache and logs off the shared project folder, so it never leaves root-owned
+  # files behind. Logs go to stderr instead: `docker compose logs frankenphp-worker`.
+  tmpfs:
+    - /app/tmp
+    - /app/logs
+  depends_on:
+    db:
+      condition: service_healthy
+
+x-app-env: &app-env
+  # APP_NAME makes config/bootstrap.php skip config/.env, so every setting is explicit here.
+  APP_NAME: frankenphp-worker-demo
+  DEBUG: "false"
+  DATABASE_URL: mysql://app:app@db/app
+  LOG_DEBUG_URL: console:///
+  LOG_ERROR_URL: console:///
+  FRANKENPHP_THREADS: "2"
+
+services:
+  db:
+    image: mariadb:11.8
+    environment:
+      # Demo values for a local stack, not secrets.
+      MARIADB_DATABASE: app
+      MARIADB_USER: app
+      MARIADB_PASSWORD: app
+      MARIADB_ROOT_PASSWORD: root
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 30
+
+  frankenphp-classic:
+    <<: *frankenphp
+    command: ["frankenphp", "run", "--config", "/etc/frankenphp/Caddyfile.classic"]
+    environment:
+      <<: *app-env
+      APP_FULL_BASE_URL: http://frankenphp-classic
+
+  frankenphp-worker:
+    <<: *frankenphp
+    command: ["frankenphp", "run", "--config", "/etc/frankenphp/Caddyfile.worker"]
+    environment:
+      <<: *app-env
+      APP_FULL_BASE_URL: http://frankenphp-worker
+      # Dev only, slow: logs static state that outlived a request.
+      WORKER_LEAK_DETECTOR: ${WORKER_LEAK_DETECTOR:-0}
+      WORKER_MAX_REQUESTS: ${WORKER_MAX_REQUESTS:-0}
+      # Dev only: X-Worker-Id response header for `bin/cake worker_soak`. Leave it off in production.
+      WORKER_EXPOSE_ID: ${WORKER_EXPOSE_ID:-1}
+
+  cli:
+    build:
+      context: ./docker/frankenphp
+      target: cli
+    image: frankenphp-worker-demo:cli
+    profiles: ["cli"]
+    # Your user, so Composer and the app never leave root-owned files in the project folder.
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /app
+    entrypoint: []
+    volumes:
+      - .:/app
+    environment:
+      <<: *app-env
+      DEBUG: "true"
+      HOME: /tmp
+      COMPOSER_HOME: /tmp/composer
+      # Demo webhook secrets for config/Seeds/DemoSeed.php and the soak test. Demo values, not real secrets.
+      DEMO_ACME_WEBHOOK_SECRET: demo-acme-secret-change-me
+      DEMO_GLOBEX_WEBHOOK_SECRET: demo-globex-secret-change-me
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

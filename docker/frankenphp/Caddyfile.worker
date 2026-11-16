@@ -1,0 +1,31 @@
+# FrankenPHP in worker mode: CakePHP boots once per worker in webroot/frankenphp-worker.php,
+# which then handles requests in a loop. Existing files (CSS, JS, images) are still served directly;
+# every other request falls through to the worker script instead of index.php.
+{
+	skip_install_trust
+	auto_https off
+	# The admin API (localhost:2019 inside the container) stays on: the image's healthcheck uses it.
+	frankenphp {
+		# FrankenPHP starts these regular PHP threads in addition to the worker threads below. Only the
+		# workers serve the app: every other .php file gets a 404, so classic mode never runs here.
+		num_threads {$FRANKENPHP_THREADS:2}
+	}
+}
+
+:80 {
+	root /app/webroot
+
+	@not_worker {
+		path *.php
+		not path /frankenphp-worker.php
+	}
+	respond @not_worker 404
+
+	php_server {
+		index frankenphp-worker.php
+		worker {
+			file /app/webroot/frankenphp-worker.php
+			num {$FRANKENPHP_THREADS:2}
+		}
+	}
+}
